@@ -7,7 +7,7 @@ from typing import List, Tuple
 import grpc
 import pytest
 
-from grpc_interceptor import ClientInterceptor
+from grpc_interceptor import ClientInterceptor, AsyncClientInterceptor
 from grpc_interceptor.testing import dummy_client, DummyRequest, raises
 
 
@@ -23,6 +23,18 @@ class MetadataInterceptor(ClientInterceptor):
         return method(request_or_iterator, new_details)
 
 
+class AsyncMetadataInterceptor(AsyncClientInterceptor):
+    """A test interceptor that injects invocation metadata."""
+
+    def __init__(self, metadata: List[Tuple[str, str]]):
+        self._metadata = metadata
+
+    async def intercept(self, method, request_or_iterator, client_call_details):
+        """Add invocation metadata to request."""
+        new_details = client_call_details._replace(metadata=self._metadata)
+        return await method(request_or_iterator, new_details)
+
+
 class CodeCountInterceptor(ClientInterceptor):
     """Test interceptor that counts status codes returned by the server."""
 
@@ -33,6 +45,17 @@ class CodeCountInterceptor(ClientInterceptor):
         """Call continuation and count status codes."""
         future = method(request_or_iterator, call_details)
         self.counts[future.code()] += 1
+        return future
+
+
+class AsyncCodeCountInterceptor(AsyncClientInterceptor):
+    def __init__(self):
+        self.counts = defaultdict(int)
+
+    async def intercept(self, method, request_or_iterator, call_details):
+        """Call continuation and count status codes."""
+        future = await method(request_or_iterator, call_details)
+        self.counts[await future.code()] += 1
         return future
 
 
@@ -101,10 +124,27 @@ def metadata_string():
     return "this_key:this_value"
 
 
-@pytest.fixture
-def metadata_client():
-    """Client with metadata interceptor."""
-    intr = MetadataInterceptor([("this_key", "this_value")])
+# @pytest.fixture
+# def metadata_client(aio):
+#     """Client with metadata interceptor."""
+#     intr = AsyncMetadataInterceptor([("this_key", "this_value")]) if aio else MetadataInterceptor([("this_key", "this_value")])
+#     interceptors = [intr]
+#
+#     special_cases = {
+#         "metadata": lambda _, c: ",".join(
+#             f"{key}:{value}" for key, value in c.invocation_metadata()
+#         )
+#     }
+#     with dummy_client(
+#         special_cases=special_cases, client_interceptors=interceptors, aio_server=aio, aio_client=aio,
+#     ) as client:
+#         yield client
+
+@pytest.mark.parametrize("aio", [False, True])
+async def test_metadata_unary(metadata_string, aio):
+    """Invocation metadata should be added to the servicer context."""
+    intr = AsyncMetadataInterceptor([("this_key", "this_value")]) if aio else MetadataInterceptor(
+        [("this_key", "this_value")])
     interceptors = [intr]
 
     special_cases = {
@@ -113,57 +153,116 @@ def metadata_client():
         )
     }
     with dummy_client(
-        special_cases=special_cases, client_interceptors=interceptors
+            special_cases=special_cases, client_interceptors=interceptors, aio_server=aio, aio_client=aio,
     ) as client:
-        yield client
+        if not aio:
+            unary_output = client.Execute(DummyRequest(input="metadata")).output
+        else:
+            unary_output = await client.Execute(DummyRequest(input="metadata"))
+            unary_output = unary_output.output
+        assert metadata_string in unary_output
 
 
-def test_metadata_unary(metadata_client, metadata_string):
+@pytest.mark.parametrize("aio", [False, True])
+async def test_metadata_server_stream(metadata_string, aio):
     """Invocation metadata should be added to the servicer context."""
-    unary_output = metadata_client.Execute(DummyRequest(input="metadata")).output
-    assert metadata_string in unary_output
+    intr = AsyncMetadataInterceptor([("this_key", "this_value")]) if aio else MetadataInterceptor(
+        [("this_key", "this_value")])
+    interceptors = [intr]
 
-
-def test_metadata_server_stream(metadata_client, metadata_string):
-    """Invocation metadata should be added to the servicer context."""
-    server_stream_output = [
-        r.output
-        for r in metadata_client.ExecuteServerStream(DummyRequest(input="metadata"))
-    ]
+    special_cases = {
+        "metadata": lambda _, c: ",".join(
+            f"{key}:{value}" for key, value in c.invocation_metadata()
+        )
+    }
+    with dummy_client(
+            special_cases=special_cases, client_interceptors=interceptors, aio_server=aio, aio_client=aio,
+    ) as client:
+        if not aio:
+            server_stream_output = [
+                r.output
+                for r in client.ExecuteServerStream(DummyRequest(input="metadata"))
+            ]
+        else:
+            result = client.ExecuteServerStream(DummyRequest(input="metadata"))
+            server_stream_output = [r.output async for r in result]
     assert metadata_string in "".join(server_stream_output)
 
 
-def test_metadata_client_stream(metadata_client, metadata_string):
+@pytest.mark.parametrize("aio", [False, True])
+async def test_metadata_client_stream(metadata_string, aio):
     """Invocation metadata should be added to the servicer context."""
-    client_stream_input = iter((DummyRequest(input="metadata"),))
-    client_stream_output = metadata_client.ExecuteClientStream(
-        client_stream_input
-    ).output
+    intr = AsyncMetadataInterceptor([("this_key", "this_value")]) if aio else MetadataInterceptor(
+        [("this_key", "this_value")])
+    interceptors = [intr]
+
+    special_cases = {
+        "metadata": lambda _, c: ",".join(
+            f"{key}:{value}" for key, value in c.invocation_metadata()
+        )
+    }
+    with dummy_client(
+            special_cases=special_cases, client_interceptors=interceptors, aio_server=aio, aio_client=aio,
+    ) as client:
+        client_stream_input = iter((DummyRequest(input="metadata"),))
+        if not aio:
+            client_stream_output = client.ExecuteClientStream(
+                client_stream_input
+            ).output
+        else:
+            client_stream_output = await client.ExecuteClientStream(
+                client_stream_input
+            )
+            client_stream_output = client_stream_output.output
     assert metadata_string in client_stream_output
 
 
-def test_metadata_client_server_stream(metadata_client, metadata_string):
+@pytest.mark.parametrize("aio", [False, True])
+async def test_metadata_client_server_stream(metadata_string, aio):
     """Invocation metadata should be added to the servicer context."""
-    stream_stream_input = iter((DummyRequest(input="metadata"),))
-    result = metadata_client.ExecuteClientServerStream(stream_stream_input)
-    stream_stream_output = [r.output for r in result]
+    intr = AsyncMetadataInterceptor([("this_key", "this_value")]) if aio else MetadataInterceptor(
+        [("this_key", "this_value")])
+    interceptors = [intr]
+
+    special_cases = {
+        "metadata": lambda _, c: ",".join(
+            f"{key}:{value}" for key, value in c.invocation_metadata()
+        )
+    }
+    with dummy_client(
+            special_cases=special_cases, client_interceptors=interceptors, aio_server=aio, aio_client=aio,
+    ) as client:
+        stream_stream_input = iter((DummyRequest(input="metadata"),))
+        if not aio:
+            result = client.ExecuteClientServerStream(stream_stream_input)
+            stream_stream_output = [r.output for r in result]
+        else:
+            result = client.ExecuteClientServerStream(stream_stream_input)
+            stream_stream_output = [r.output async for r in result]
     assert metadata_string in "".join(stream_stream_output)
 
 
-def test_code_counting():
+@pytest.mark.parametrize("aio", [False, True])
+async def test_code_counting(aio):
     """Access to code on call details works correctly."""
-    interceptor = CodeCountInterceptor()
+    interceptor = AsyncCodeCountInterceptor() if aio else CodeCountInterceptor()
     special_cases = {"error": raises(ValueError("oops"))}
     with dummy_client(
-        special_cases=special_cases, client_interceptors=[interceptor]
+        special_cases=special_cases, client_interceptors=[interceptor], aio_server=aio, aio_client=aio,
     ) as client:
         assert interceptor.counts == {}
-        client.Execute(DummyRequest(input="foo"))
-        assert interceptor.counts == {grpc.StatusCode.OK: 1}
-        with pytest.raises(grpc.RpcError):
-            client.Execute(DummyRequest(input="error"))
-        assert interceptor.counts == {grpc.StatusCode.OK: 1, grpc.StatusCode.UNKNOWN: 1}
-
+        if not aio:
+            client.Execute(DummyRequest(input="foo"))
+            assert interceptor.counts == {grpc.StatusCode.OK: 1}
+            with pytest.raises(grpc.RpcError):
+                client.Execute(DummyRequest(input="error"))
+            assert interceptor.counts == {grpc.StatusCode.OK: 1, grpc.StatusCode.UNKNOWN: 1}
+        else:
+            await client.Execute(DummyRequest(input="foo"))
+            assert interceptor.counts == {grpc.StatusCode.OK: 1}
+            with pytest.raises(grpc.RpcError):
+                await client.Execute(DummyRequest(input="error"))
+            assert interceptor.counts == {grpc.StatusCode.OK: 1, grpc.StatusCode.UNKNOWN: 1}
 
 def test_basic_retry():
     """Calling the continuation multiple times should work."""
