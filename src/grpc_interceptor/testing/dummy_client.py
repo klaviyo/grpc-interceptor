@@ -23,7 +23,7 @@ from grpc_interceptor.client import ClientInterceptor
 from grpc_interceptor.server import AsyncServerInterceptor, grpc_aio, ServerInterceptor
 from grpc_interceptor.testing.protos import dummy_pb2_grpc
 from grpc_interceptor.testing.protos.dummy_pb2 import DummyRequest, DummyResponse
-from ..aio_channel import insecure_channel
+from .._aio_channel import insecure_channel
 
 SpecialCaseFunction = Callable[
     [str, Union[grpc.ServicerContext, grpc_aio.ServicerContext]], str
