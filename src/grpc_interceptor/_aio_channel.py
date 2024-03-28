@@ -39,7 +39,7 @@ class Channel(grpc.aio._channel.Channel):
         if interceptors is not None:
             for interceptor in interceptors:
                 if not isinstance(interceptor, valid_classes):
-                    msg = ' or '.join([x.__name__ for x in valid_classes])
+                    msg = ' or '.join(x.__name__ for x in valid_classes)
                     raise ValueError(
                         f"Interceptor {interceptor} must be {msg}")
                 if isinstance(interceptor, UnaryUnaryClientInterceptor):

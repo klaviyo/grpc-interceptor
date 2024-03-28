@@ -155,6 +155,21 @@ class AsyncCachingInterceptor(AsyncClientInterceptor):
         return self._cache[cache_key]
 
 
+def get_metadata_interceptor(aio, metadata):
+    if aio:
+        return AsyncMetadataInterceptor(metadata)
+    return MetadataInterceptor(metadata)
+
+
+@pytest.fixture
+def metadata_special_case():
+    return {
+        "metadata": lambda _, c: ",".join(
+            f"{key}:{value}" for key, value in c.invocation_metadata()
+        )
+    }
+
+
 @pytest.fixture
 def metadata_string():
     """Expected joined metadata string."""
@@ -162,104 +177,73 @@ def metadata_string():
 
 
 @pytest.mark.parametrize("aio", [False, True])
-async def test_metadata_unary(metadata_string, aio):
+async def test_metadata_unary(metadata_string, metadata_special_case, aio):
     """Invocation metadata should be added to the servicer context."""
-    intr = AsyncMetadataInterceptor([("this_key", "this_value")]) if aio else MetadataInterceptor(
-        [("this_key", "this_value")])
-    interceptors = [intr]
+    interceptors = [get_metadata_interceptor(aio, [("this_key", "this_value")])]
 
-    special_cases = {
-        "metadata": lambda _, c: ",".join(
-            f"{key}:{value}" for key, value in c.invocation_metadata()
-        )
-    }
     with dummy_client(
-            special_cases=special_cases, client_interceptors=interceptors, aio_server=aio, aio_client=aio,
+            special_cases=metadata_special_case, client_interceptors=interceptors, aio_server=aio, aio_client=aio,
     ) as client:
-        if not aio:
-            unary_output = client.Execute(DummyRequest(input="metadata")).output
+        if aio:
+            unary_output = (await client.Execute(DummyRequest(input="metadata"))).output
         else:
-            unary_output = await client.Execute(DummyRequest(input="metadata"))
-            unary_output = unary_output.output
+            unary_output = client.Execute(DummyRequest(input="metadata")).output
         assert metadata_string in unary_output
 
 
 @pytest.mark.parametrize("aio", [False, True])
-async def test_metadata_server_stream(metadata_string, aio):
+async def test_metadata_server_stream(metadata_string, metadata_special_case,  aio):
     """Invocation metadata should be added to the servicer context."""
-    intr = AsyncMetadataInterceptor([("this_key", "this_value")]) if aio else MetadataInterceptor(
-        [("this_key", "this_value")])
-    interceptors = [intr]
+    interceptors = [get_metadata_interceptor(aio, [("this_key", "this_value")])]
 
-    special_cases = {
-        "metadata": lambda _, c: ",".join(
-            f"{key}:{value}" for key, value in c.invocation_metadata()
-        )
-    }
     with dummy_client(
-            special_cases=special_cases, client_interceptors=interceptors, aio_server=aio, aio_client=aio,
+            special_cases=metadata_special_case, client_interceptors=interceptors, aio_server=aio, aio_client=aio,
     ) as client:
-        if not aio:
+        if aio:
+            result = client.ExecuteServerStream(DummyRequest(input="metadata"))
+            server_stream_output = [r.output async for r in result]
+        else:
             server_stream_output = [
                 r.output
                 for r in client.ExecuteServerStream(DummyRequest(input="metadata"))
             ]
-        else:
-            result = client.ExecuteServerStream(DummyRequest(input="metadata"))
-            server_stream_output = [r.output async for r in result]
     assert metadata_string in "".join(server_stream_output)
 
 
 @pytest.mark.parametrize("aio", [False, True])
-async def test_metadata_client_stream(metadata_string, aio):
+async def test_metadata_client_stream(metadata_string, metadata_special_case,  aio):
     """Invocation metadata should be added to the servicer context."""
-    intr = AsyncMetadataInterceptor([("this_key", "this_value")]) if aio else MetadataInterceptor(
-        [("this_key", "this_value")])
-    interceptors = [intr]
+    interceptors = [get_metadata_interceptor(aio, [("this_key", "this_value")])]
 
-    special_cases = {
-        "metadata": lambda _, c: ",".join(
-            f"{key}:{value}" for key, value in c.invocation_metadata()
-        )
-    }
     with dummy_client(
-            special_cases=special_cases, client_interceptors=interceptors, aio_server=aio, aio_client=aio,
+            special_cases=metadata_special_case, client_interceptors=interceptors, aio_server=aio, aio_client=aio,
     ) as client:
         client_stream_input = iter((DummyRequest(input="metadata"),))
-        if not aio:
+        if aio:
+            client_stream_output = (await client.ExecuteClientStream(
+                client_stream_input
+            )).output
+        else:
             client_stream_output = client.ExecuteClientStream(
                 client_stream_input
             ).output
-        else:
-            client_stream_output = await client.ExecuteClientStream(
-                client_stream_input
-            )
-            client_stream_output = client_stream_output.output
     assert metadata_string in client_stream_output
 
 
 @pytest.mark.parametrize("aio", [False, True])
-async def test_metadata_client_server_stream(metadata_string, aio):
+async def test_metadata_client_server_stream(metadata_string, metadata_special_case,  aio):
     """Invocation metadata should be added to the servicer context."""
-    intr = AsyncMetadataInterceptor([("this_key", "this_value")]) if aio else MetadataInterceptor(
-        [("this_key", "this_value")])
-    interceptors = [intr]
+    interceptors = [get_metadata_interceptor(aio, [("this_key", "this_value")])]
 
-    special_cases = {
-        "metadata": lambda _, c: ",".join(
-            f"{key}:{value}" for key, value in c.invocation_metadata()
-        )
-    }
     with dummy_client(
-            special_cases=special_cases, client_interceptors=interceptors, aio_server=aio, aio_client=aio,
+            special_cases=metadata_special_case, client_interceptors=interceptors, aio_server=aio, aio_client=aio,
     ) as client:
         stream_stream_input = iter((DummyRequest(input="metadata"),))
-        if not aio:
-            result = client.ExecuteClientServerStream(stream_stream_input)
-            stream_stream_output = [r.output for r in result]
-        else:
-            result = client.ExecuteClientServerStream(stream_stream_input)
+        result = client.ExecuteClientServerStream(stream_stream_input)
+        if aio:
             stream_stream_output = [r.output async for r in result]
+        else:
+            stream_stream_output = [r.output for r in result]
     assert metadata_string in "".join(stream_stream_output)
 
 
@@ -272,18 +256,18 @@ async def test_code_counting(aio):
         special_cases=special_cases, client_interceptors=[interceptor], aio_server=aio, aio_client=aio,
     ) as client:
         assert interceptor.counts == {}
-        if not aio:
-            client.Execute(DummyRequest(input="foo"))
-            assert interceptor.counts == {grpc.StatusCode.OK: 1}
-            with pytest.raises(grpc.RpcError):
-                client.Execute(DummyRequest(input="error"))
-            assert interceptor.counts == {grpc.StatusCode.OK: 1, grpc.StatusCode.UNKNOWN: 1}
-        else:
+        if aio:
             await client.Execute(DummyRequest(input="foo"))
-            assert interceptor.counts == {grpc.StatusCode.OK: 1}
-            with pytest.raises(grpc.RpcError):
+        else:
+            client.Execute(DummyRequest(input="foo"))
+        assert interceptor.counts == {grpc.StatusCode.OK: 1}
+
+        with pytest.raises(grpc.RpcError):
+            if aio:
                 await client.Execute(DummyRequest(input="error"))
-            assert interceptor.counts == {grpc.StatusCode.OK: 1, grpc.StatusCode.UNKNOWN: 1}
+            else:
+                client.Execute(DummyRequest(input="error"))
+        assert interceptor.counts == {grpc.StatusCode.OK: 1, grpc.StatusCode.UNKNOWN: 1}
 
 
 @pytest.mark.parametrize("aio", [False, True])
@@ -294,11 +278,10 @@ async def test_basic_retry(aio):
     with dummy_client(
         special_cases=special_cases, client_interceptors=[interceptor], aio_server=aio, aio_client=aio,
     ) as client:
-        if not aio:
-            assert client.Execute(DummyRequest(input="error_once")).output == "OK"
+        if aio:
+            assert (await client.Execute(DummyRequest(input="error_once"))).output == "OK"
         else:
-            result = await client.Execute(DummyRequest(input="error_once"))
-            assert result.output == "OK"
+            assert client.Execute(DummyRequest(input="error_once")).output == "OK"
 
 
 @pytest.mark.parametrize("aio", [False, True])
@@ -309,12 +292,11 @@ async def test_failed_retry(aio):
     with dummy_client(
         special_cases=special_cases, client_interceptors=[interceptor], aio_server=aio, aio_client=aio,
     ) as client:
-        if not aio:
-            with pytest.raises(grpc.RpcError):
-                client.Execute(DummyRequest(input="error_twice"))
-        else:
-            with pytest.raises(grpc.RpcError):
+        with pytest.raises(grpc.RpcError):
+            if aio:
                 await client.Execute(DummyRequest(input="error_twice"))
+            else:
+                client.Execute(DummyRequest(input="error_twice"))
 
 
 @pytest.mark.parametrize("aio", [False, True])
@@ -328,11 +310,10 @@ async def test_chaining(aio):
         special_cases=special_cases, client_interceptors=interceptors, aio_server=aio, aio_client=aio,
     ) as client:
         assert code_count_interceptor.counts == {}
-        if not aio:
-            assert client.Execute(DummyRequest(input="error_once")).output == "OK"
+        if aio:
+            assert (await client.Execute(DummyRequest(input="error_once"))).output == "OK"
         else:
-            result = await client.Execute(DummyRequest(input="error_once"))
-            assert result.output == "OK"
+            assert client.Execute(DummyRequest(input="error_once")).output == "OK"
         assert code_count_interceptor.counts == {
             grpc.StatusCode.OK: 1,
             grpc.StatusCode.UNKNOWN: 1,
@@ -350,38 +331,30 @@ async def test_caching(aio):
             special_cases={}, client_interceptors=interceptors, aio_server=aio, aio_client=aio,
     ) as client:
         assert code_count_interceptor.counts == {}
-        if not aio:
-            assert client.Execute(DummyRequest(input="hello")).output == "hello"
-            assert code_count_interceptor.counts == {grpc.StatusCode.OK: 1}
-            assert client.Execute(DummyRequest(input="hello")).output == "hello"
-            assert code_count_interceptor.counts == {grpc.StatusCode.OK: 1}
-            assert client.Execute(DummyRequest(input="goodbye")).output == "goodbye"
-            assert code_count_interceptor.counts == {grpc.StatusCode.OK: 2}
-        else:
-            result = await client.Execute(DummyRequest(input="hello"))
-            assert result.output == "hello"
-            assert code_count_interceptor.counts == {grpc.StatusCode.OK: 1}
-            result = await client.Execute(DummyRequest(input="hello"))
-            assert result.output == "hello"
-            assert code_count_interceptor.counts == {grpc.StatusCode.OK: 1}
-            result = await client.Execute(DummyRequest(input="goodbye"))
-            assert result.output == "goodbye"
-            assert code_count_interceptor.counts == {grpc.StatusCode.OK: 2}
+
+        async def make_request(word):
+            if aio:
+                return await client.Execute(DummyRequest(input=word))
+            else:
+                return client.Execute(DummyRequest(input=word))
+
+        assert (await make_request("hello")).output == "hello"
+        assert code_count_interceptor.counts == {grpc.StatusCode.OK: 1}
+        assert (await make_request("hello")).output == "hello"
+        assert code_count_interceptor.counts == {grpc.StatusCode.OK: 1}
+        assert (await make_request("goodbye")).output == "goodbye"
+        assert code_count_interceptor.counts == {grpc.StatusCode.OK: 2}
         # Try streaming requests
         inputs = ["foo", "bar"]
-        if not aio:
+
+        async def make_request():
             input_iter = (DummyRequest(input=input) for input in inputs)
-            assert client.ExecuteClientStream(input_iter).output == "foobar"
-            assert code_count_interceptor.counts == {grpc.StatusCode.OK: 3}
-            input_iter = (DummyRequest(input=input) for input in inputs)
-            assert client.ExecuteClientStream(input_iter).output == "foobar"
-            assert code_count_interceptor.counts == {grpc.StatusCode.OK: 3}
-        else:
-            input_iter = (DummyRequest(input=input) for input in inputs)
-            result = await client.ExecuteClientStream(input_iter)
-            assert result.output == "foobar"
-            assert code_count_interceptor.counts == {grpc.StatusCode.OK: 3}
-            input_iter = (DummyRequest(input=input) for input in inputs)
-            result = await client.ExecuteClientStream(input_iter)
-            assert result.output == "foobar"
-            assert code_count_interceptor.counts == {grpc.StatusCode.OK: 3}
+            if aio:
+                return await client.ExecuteClientStream(input_iter)
+            else:
+                return client.ExecuteClientStream(input_iter)
+
+        assert (await make_request()).output == "foobar"
+        assert code_count_interceptor.counts == {grpc.StatusCode.OK: 3}
+        assert (await make_request()).output == "foobar"
+        assert code_count_interceptor.counts == {grpc.StatusCode.OK: 3}
