@@ -275,9 +275,7 @@ def dummy_channel(
 
     if aio_client:
         channel = insecure_channel(channel_descriptor, interceptors=client_interceptors)
-        # Client interceptors might work, but I haven't tested them yet.
-        # if client_interceptors:
-        #     raise TypeError("Client interceptors not supported with async channel")
+
         # We close the channel in _AsyncServerThread because we need to await
         # it, and doing that in this thread is problematic because dummy_client
         # isn't always used in an async context. We could get around that by

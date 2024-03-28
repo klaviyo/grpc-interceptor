@@ -79,6 +79,23 @@ class RetryInterceptor(ClientInterceptor):
         return future
 
 
+class AsyncRetryInterceptor(AsyncClientInterceptor):
+    def __init__(self, retries):
+        self._retries = retries
+
+    async def intercept(self, method, request_or_iterator, call_details):
+        """Call the continuation and retry up to retries times if it fails."""
+        tries_remaining = 1 + self._retries
+        while 0 < tries_remaining:
+            future = await method(request_or_iterator, call_details)
+            try:
+                return await future
+            except Exception:
+                tries_remaining -= 1
+
+        return future
+
+
 class CrashingService:
     """Special case function that raises a given number of times before succeeding."""
 
@@ -118,27 +135,31 @@ class CachingInterceptor(ClientInterceptor):
         return self._cache[cache_key]
 
 
+class AsyncCachingInterceptor(AsyncClientInterceptor):
+    """A test interceptor that caches responses based on input string."""
+
+    def __init__(self):
+        self._cache = {}
+
+    async def intercept(self, method, request_or_iterator, call_details):
+        """Cache responses based on input string."""
+        if hasattr(request_or_iterator, "__iter__"):
+            request_or_iterator, copy_iterator = itertools.tee(request_or_iterator)
+            cache_key = tuple(r.input for r in copy_iterator)
+        else:
+            cache_key = request_or_iterator.input
+
+        if cache_key not in self._cache:
+            self._cache[cache_key] = await method(request_or_iterator, call_details)
+
+        return self._cache[cache_key]
+
+
 @pytest.fixture
 def metadata_string():
     """Expected joined metadata string."""
     return "this_key:this_value"
 
-
-# @pytest.fixture
-# def metadata_client(aio):
-#     """Client with metadata interceptor."""
-#     intr = AsyncMetadataInterceptor([("this_key", "this_value")]) if aio else MetadataInterceptor([("this_key", "this_value")])
-#     interceptors = [intr]
-#
-#     special_cases = {
-#         "metadata": lambda _, c: ",".join(
-#             f"{key}:{value}" for key, value in c.invocation_metadata()
-#         )
-#     }
-#     with dummy_client(
-#         special_cases=special_cases, client_interceptors=interceptors, aio_server=aio, aio_client=aio,
-#     ) as client:
-#         yield client
 
 @pytest.mark.parametrize("aio", [False, True])
 async def test_metadata_unary(metadata_string, aio):
@@ -264,63 +285,103 @@ async def test_code_counting(aio):
                 await client.Execute(DummyRequest(input="error"))
             assert interceptor.counts == {grpc.StatusCode.OK: 1, grpc.StatusCode.UNKNOWN: 1}
 
-def test_basic_retry():
+
+@pytest.mark.parametrize("aio", [False, True])
+async def test_basic_retry(aio):
     """Calling the continuation multiple times should work."""
-    interceptor = RetryInterceptor(retries=1)
+    interceptor = AsyncRetryInterceptor(retries=1) if aio else RetryInterceptor(retries=1)
     special_cases = {"error_once": CrashingService(num_crashes=1)}
     with dummy_client(
-        special_cases=special_cases, client_interceptors=[interceptor]
+        special_cases=special_cases, client_interceptors=[interceptor], aio_server=aio, aio_client=aio,
     ) as client:
-        assert client.Execute(DummyRequest(input="error_once")).output == "OK"
+        if not aio:
+            assert client.Execute(DummyRequest(input="error_once")).output == "OK"
+        else:
+            result = await client.Execute(DummyRequest(input="error_once"))
+            assert result.output == "OK"
 
 
-def test_failed_retry():
+@pytest.mark.parametrize("aio", [False, True])
+async def test_failed_retry(aio):
     """The interceptor can return failed futures."""
-    interceptor = RetryInterceptor(retries=1)
+    interceptor = AsyncRetryInterceptor(retries=1) if aio else RetryInterceptor(retries=1)
     special_cases = {"error_twice": CrashingService(num_crashes=2)}
     with dummy_client(
-        special_cases=special_cases, client_interceptors=[interceptor]
+        special_cases=special_cases, client_interceptors=[interceptor], aio_server=aio, aio_client=aio,
     ) as client:
-        with pytest.raises(grpc.RpcError):
-            client.Execute(DummyRequest(input="error_twice"))
+        if not aio:
+            with pytest.raises(grpc.RpcError):
+                client.Execute(DummyRequest(input="error_twice"))
+        else:
+            with pytest.raises(grpc.RpcError):
+                await client.Execute(DummyRequest(input="error_twice"))
 
 
-def test_chaining():
+@pytest.mark.parametrize("aio", [False, True])
+async def test_chaining(aio):
     """Chaining interceptors should work."""
-    retry_interceptor = RetryInterceptor(retries=1)
-    code_count_interceptor = CodeCountInterceptor()
+    retry_interceptor = AsyncRetryInterceptor(retries=1) if aio else RetryInterceptor(retries=1)
+    code_count_interceptor = AsyncCodeCountInterceptor() if aio else CodeCountInterceptor()
     interceptors = [retry_interceptor, code_count_interceptor]
     special_cases = {"error_once": CrashingService(num_crashes=1)}
     with dummy_client(
-        special_cases=special_cases, client_interceptors=interceptors
+        special_cases=special_cases, client_interceptors=interceptors, aio_server=aio, aio_client=aio,
     ) as client:
         assert code_count_interceptor.counts == {}
-        assert client.Execute(DummyRequest(input="error_once")).output == "OK"
+        if not aio:
+            assert client.Execute(DummyRequest(input="error_once")).output == "OK"
+        else:
+            result = await client.Execute(DummyRequest(input="error_once"))
+            assert result.output == "OK"
         assert code_count_interceptor.counts == {
             grpc.StatusCode.OK: 1,
             grpc.StatusCode.UNKNOWN: 1,
         }
 
 
-def test_caching():
+@pytest.mark.parametrize("aio", [False, True])
+async def test_caching(aio):
     """Caching calls (not calling the continuation) should work."""
-    caching_interceptor = CachingInterceptor()
+    caching_interceptor = AsyncCachingInterceptor() if aio else CachingInterceptor()
     # Use this to test how many times the continuation is called.
-    code_count_interceptor = CodeCountInterceptor()
+    code_count_interceptor = AsyncCodeCountInterceptor() if aio else CodeCountInterceptor()
     interceptors = [caching_interceptor, code_count_interceptor]
-    with dummy_client(special_cases={}, client_interceptors=interceptors) as client:
+    with dummy_client(
+            special_cases={}, client_interceptors=interceptors, aio_server=aio, aio_client=aio,
+    ) as client:
         assert code_count_interceptor.counts == {}
-        assert client.Execute(DummyRequest(input="hello")).output == "hello"
-        assert code_count_interceptor.counts == {grpc.StatusCode.OK: 1}
-        assert client.Execute(DummyRequest(input="hello")).output == "hello"
-        assert code_count_interceptor.counts == {grpc.StatusCode.OK: 1}
-        assert client.Execute(DummyRequest(input="goodbye")).output == "goodbye"
-        assert code_count_interceptor.counts == {grpc.StatusCode.OK: 2}
+        if not aio:
+            assert client.Execute(DummyRequest(input="hello")).output == "hello"
+            assert code_count_interceptor.counts == {grpc.StatusCode.OK: 1}
+            assert client.Execute(DummyRequest(input="hello")).output == "hello"
+            assert code_count_interceptor.counts == {grpc.StatusCode.OK: 1}
+            assert client.Execute(DummyRequest(input="goodbye")).output == "goodbye"
+            assert code_count_interceptor.counts == {grpc.StatusCode.OK: 2}
+        else:
+            result = await client.Execute(DummyRequest(input="hello"))
+            assert result.output == "hello"
+            assert code_count_interceptor.counts == {grpc.StatusCode.OK: 1}
+            result = await client.Execute(DummyRequest(input="hello"))
+            assert result.output == "hello"
+            assert code_count_interceptor.counts == {grpc.StatusCode.OK: 1}
+            result = await client.Execute(DummyRequest(input="goodbye"))
+            assert result.output == "goodbye"
+            assert code_count_interceptor.counts == {grpc.StatusCode.OK: 2}
         # Try streaming requests
         inputs = ["foo", "bar"]
-        input_iter = (DummyRequest(input=input) for input in inputs)
-        assert client.ExecuteClientStream(input_iter).output == "foobar"
-        assert code_count_interceptor.counts == {grpc.StatusCode.OK: 3}
-        input_iter = (DummyRequest(input=input) for input in inputs)
-        assert client.ExecuteClientStream(input_iter).output == "foobar"
-        assert code_count_interceptor.counts == {grpc.StatusCode.OK: 3}
+        if not aio:
+            input_iter = (DummyRequest(input=input) for input in inputs)
+            assert client.ExecuteClientStream(input_iter).output == "foobar"
+            assert code_count_interceptor.counts == {grpc.StatusCode.OK: 3}
+            input_iter = (DummyRequest(input=input) for input in inputs)
+            assert client.ExecuteClientStream(input_iter).output == "foobar"
+            assert code_count_interceptor.counts == {grpc.StatusCode.OK: 3}
+        else:
+            input_iter = (DummyRequest(input=input) for input in inputs)
+            result = await client.ExecuteClientStream(input_iter)
+            assert result.output == "foobar"
+            assert code_count_interceptor.counts == {grpc.StatusCode.OK: 3}
+            input_iter = (DummyRequest(input=input) for input in inputs)
+            result = await client.ExecuteClientStream(input_iter)
+            assert result.output == "foobar"
+            assert code_count_interceptor.counts == {grpc.StatusCode.OK: 3}
