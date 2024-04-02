@@ -1,9 +1,10 @@
 """Base class for client-side interceptors."""
 
 import abc
-from typing import Any, Callable, Iterator, NamedTuple, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Iterator, NamedTuple, Optional, Sequence, Tuple, Union, Iterable, AsyncIterable
 
 import grpc
+from grpc import aio as grpc_aio
 
 
 class _ClientCallDetailsFields(NamedTuple):
@@ -131,8 +132,93 @@ class ClientInterceptor(
         return self.intercept(_swap_args(continuation), request_iterator, call_details)
 
 
+class AsyncClientInterceptor(
+    grpc_aio.UnaryUnaryClientInterceptor,
+    grpc_aio.UnaryStreamClientInterceptor,
+    grpc_aio.StreamUnaryClientInterceptor,
+    grpc_aio.StreamStreamClientInterceptor,
+    metaclass=abc.ABCMeta,
+):
+    """Base class for asyncio client-side interceptors.
+
+    To implement an interceptor, subclass this class and override the intercept method.
+    """
+
+    @abc.abstractmethod
+    async def intercept(
+            self,
+            method: Callable,
+            request_or_iterator: Any,
+            client_call_details: grpc_aio.ClientCallDetails,
+    ) -> Any:
+        response_or_iterator = method(request_or_iterator, client_call_details)
+        if hasattr(response_or_iterator, "__aiter__"):
+            return response_or_iterator
+        else:
+            return await response_or_iterator
+
+    async def intercept_unary_unary(
+            self,
+            continuation: Callable,
+            client_call_details: grpc_aio.ClientCallDetails,
+            request: Any,
+    ):
+        """Implementation of grpc.aio.UnaryUnaryClientInterceptor.
+
+        This is not part of the grpc_interceptor.AsyncClientInterceptor API, but must have
+        a public name. Do not override it, unless you know what you're doing.
+        """
+        return await self.intercept(_async_swap_args(continuation), request, client_call_details)
+
+    async def intercept_unary_stream(
+            self,
+            continuation: Callable,
+            client_call_details: grpc_aio.ClientCallDetails,
+            request: Any,
+    ):
+        """Implementation of grpc.aio.UnaryStreamClientInterceptor.
+
+        This is not part of the grpc_interceptor.AsyncClientInterceptor API, but must have
+        a public name. Do not override it, unless you know what you're doing.
+        """
+        return await self.intercept(_async_swap_args(continuation), request, client_call_details)
+
+    async def intercept_stream_unary(
+            self,
+            continuation: Callable,
+            client_call_details: grpc_aio.ClientCallDetails,
+            request_iterator: Union[Iterable[Any], AsyncIterable[Any]],
+    ):
+        """Implementation of grpc.aio.StreamUnaryClientInterceptor.
+
+        This is not part of the grpc_interceptor.AsyncClientInterceptor API, but must have
+        a public name. Do not override it, unless you know what you're doing.
+        """
+        return await self.intercept(_async_swap_args(continuation), request_iterator, client_call_details)
+
+    async def intercept_stream_stream(
+            self,
+            continuation: Callable,
+            client_call_details: grpc_aio.ClientCallDetails,
+            request_iterator: Union[Iterable[Any], AsyncIterable[Any]],
+    ):
+        """Implementation of grpc.aio.StreamStreamClientInterceptor.
+
+        This is not part of the grpc_interceptor.AsyncClientInterceptor API, but must have
+        a public name. Do not override it, unless you know what you're doing.
+        """
+        return await self.intercept(_async_swap_args(continuation), request_iterator, client_call_details)
+
+
 def _swap_args(fn: Callable[[Any, Any], Any]) -> Callable[[Any, Any], Any]:
     def new_fn(x, y):
         return fn(y, x)
+
+    return new_fn
+
+
+def _async_swap_args(fn: Callable[[Any, Any], Any]) -> Callable[[Any, Any], Any]:
+    async def new_fn(x, y):
+        return await fn(y, x)
 
     return new_fn

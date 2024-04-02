@@ -23,6 +23,7 @@ from grpc_interceptor.client import ClientInterceptor
 from grpc_interceptor.server import AsyncServerInterceptor, grpc_aio, ServerInterceptor
 from grpc_interceptor.testing.protos import dummy_pb2_grpc
 from grpc_interceptor.testing.protos.dummy_pb2 import DummyRequest, DummyResponse
+from .._aio_channel import insecure_channel
 
 SpecialCaseFunction = Callable[
     [str, Union[grpc.ServicerContext, grpc_aio.ServicerContext]], str
@@ -273,10 +274,8 @@ def dummy_channel(
     channel_descriptor = f"localhost:{port}"
 
     if aio_client:
-        channel = grpc_aio.insecure_channel(channel_descriptor)
-        # Client interceptors might work, but I haven't tested them yet.
-        if client_interceptors:
-            raise TypeError("Client interceptors not supported with async channel")
+        channel = insecure_channel(channel_descriptor, interceptors=client_interceptors)
+
         # We close the channel in _AsyncServerThread because we need to await
         # it, and doing that in this thread is problematic because dummy_client
         # isn't always used in an async context. We could get around that by
